@@ -3,8 +3,7 @@
 A small Node.js inventory service — items, stock levels per location, and an append-only
 movement ledger. Express on Vercel, Supabase for data.
 
-It exists to be instrumented. See [Telemetry](#telemetry) — two files and about thirty
-lines produce full request traces.
+It is instrumented with OpenTelemetry. See [Telemetry](#telemetry).
 
 ## Getting started
 
@@ -50,23 +49,27 @@ to a single function.
 ## Layout
 
 ```
-api/index.js       Vercel entrypoint — exports the Express app as a function
-server.js          Local entrypoint — app.listen()
+instrumentation.js   OpenTelemetry SDK setup. Imported first by both entrypoints.
+api/index.js         Vercel entrypoint — exports the Express app as a function
+server.js            Local entrypoint — app.listen()
 src/
-  app.js           Express assembly, 404 and error handlers
-  supabase.js      Client factory and error unwrapping
-  services/        Data access. Every Supabase call lives here.
-  routes/api.js    JSON endpoints
-  routes/pages.js  Server-rendered HTML
-  views/layout.js  Page shell, table helper, HTML escaping
-  validate.js      Request parsing and validation
+  app.js             Express assembly, 404 and error handlers
+  supabase.js        Client factory and error unwrapping
+  services/          Data access. Every Supabase call lives here.
+  routes/api.js      JSON endpoints
+  routes/pages.js    Server-rendered HTML
+  views/layout.js    Page shell, table helper, HTML escaping
+  validate.js        Request parsing and validation
+  telemetry/
+    withSpan.js         Wraps a service call in a span with domain attributes
+    platformContext.js  Cold start and Vercel request id
+    logger.js           Logs to stdout and to SigNoz, with trace ids
 ```
 
 Two entrypoints, one app. Neither holds logic — both import `src/app.js`.
 
-**`services/` is the only place Supabase is called.** That constraint is the point: it
-gives instrumentation a single seam to wrap, so tracing every endpoint later means
-touching one layer rather than every route handler.
+**`services/` is the only place Supabase is called.** That gives instrumentation a single
+seam, so tracing every endpoint means touching one layer rather than every route handler.
 
 There is no build step. HTML is assembled from template literals, and every interpolated
 value is escaped.
@@ -125,8 +128,11 @@ does not help Store 1 today.
 
 ## Telemetry
 
-OpenTelemetry traces exported over OTLP to SigNoz. Two files, about thirty lines, and no
-changes to any service or route.
+OpenTelemetry traces and logs, exported over OTLP to SigNoz.
+
+Most of it costs nothing. `instrumentation.js` plus about ten lines in `src/app.js` produce
+full request traces on their own. The rest — domain attributes, cold starts, log
+correlation — is hand-written, and each piece is described below.
 
 ### Configuration
 
@@ -159,11 +165,9 @@ POST /api/movements                        47.5ms  http.route=/api/movements
       └─ fetch PATCH .../rest/v1/stock      1.9ms
 ```
 
-The second one is the non-atomic write, visible rather than described.
+The second is the non-atomic write. The three calls are visible as separate spans.
 
-### How little of this is hand-written
-
-Almost none of it.
+### What comes for free
 
 **`supabase-js` calls appear on their own.** It uses `fetch`, and `@vercel/otel`
 instruments `fetch` by default. No wrappers around the data layer, no spans in
@@ -259,6 +263,30 @@ module body runs, so Express is already resolved by then.
 
 Ten lines of renaming buys the same span name without the constraint.
 
+### Logs, correlated to traces
+
+`src/telemetry/logger.js` writes every line twice:
+
+- to **stdout**, where Vercel collects it as a runtime log. Hobby keeps those for one hour.
+- as an **OTel log record**, exported to SigNoz over OTLP.
+
+Both carry the same `trace_id` and `span_id`, so a line found in either can be followed
+into the other, and from either into the trace.
+
+```
+stdout   {"level":"warn","msg":"POST /api/movements failed", … ,"trace_id":"cf1462e1e3…"}
+SigNoz   [WARN] POST /api/movements failed  trace_id=cf1462e1e3… span_id=cb21dfae74…
+```
+
+The severity split matters: a request rejected with a 4xx logs at `warn`, a fault at
+`error`. A burst of 409s is worth seeing without it counting as an outage.
+
+With telemetry disabled the OTel side is a no-op — the logs API does nothing without a
+registered provider — and lines still reach stdout, without trace ids.
+
+A purpose-built logger is used rather than pino, to avoid a transport setup that is awkward
+in a serverless function. Pino is the production swap.
+
 ### Vercel's own observability
 
 Everything below works on the Hobby plan, alongside the SigNoz export:
@@ -281,15 +309,14 @@ is gone from Vercel Hobby; in SigNoz the trace is still there.
 
 ### What is not captured
 
-- **Time before the code runs** — CDN routing, queueing, container boot. Vercel Trace
-  Drains close this gap by forwarding infrastructure spans directly, but they need a **Pro
-  or Enterprise** plan ($0.50 per drains volume unit).
+- **Time before the code runs** — CDN routing, queueing, container boot. `faas.init_duration_ms`
+  measures from Node's start, so it is a floor on cold-start cost, not the whole of it. Vercel
+  Trace Drains close this gap by forwarding infrastructure spans, but need a **Pro or
+  Enterprise** plan ($0.50 per drains volume unit).
 - **Requests that never reach the function** — CDN cache hits, edge 404s. Close to zero
   here, since every route is dynamic and nothing is cached.
-- **Container boot before Node starts.** `faas.init_duration_ms` (below) measures
-  initialisation from Node's start, so it is a floor on cold-start cost, not the whole of it.
-- **Logs.** `console.log` output still goes to Vercel's runtime logs, which Hobby keeps for
-  one hour. Shipping logs to SigNoz with `trace_id` correlation is a separate increment.
+- **Metrics.** No OTel metrics are configured. Traces and logs answer what this service
+  currently needs; metrics would be the next increment, for dashboards and alerting.
 
 ### Upgrading to Trace Drains later
 
