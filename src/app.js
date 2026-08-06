@@ -5,6 +5,7 @@ import apiRoutes from './routes/api.js'
 import pageRoutes from './routes/pages.js'
 import { layout, esc } from './views/layout.js'
 import { platformContext } from './telemetry/platformContext.js'
+import { logger } from './telemetry/logger.js'
 
 /**
  * Records where a router is mounted, while that information is still available.
@@ -79,7 +80,18 @@ export function createApp() {
   app.use((error, req, res, _next) => {
     const status = error.status ?? 500
 
-    if (status >= 500) console.error(`${req.method} ${req.path} failed:`, error)
+    // Logged at every status, not only 5xx: a burst of 409s is an operational signal
+    // too. The severity distinguishes them — warn for a rejected request, error for a
+    // fault — so the error rate stays a measure of faults.
+    const log = status >= 500 ? logger.error : logger.warn
+
+    log(`${req.method} ${req.path} failed`, {
+      'http.request.method': req.method,
+      'url.path': req.path,
+      'http.response.status_code': status,
+      'error.message': error.message,
+      ...(error.supabaseCode ? { 'error.supabase_code': error.supabaseCode } : {})
+    })
 
     if (req.path.startsWith('/api/')) {
       return res.status(status).json({

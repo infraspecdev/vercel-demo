@@ -1,6 +1,7 @@
 import { getSupabase, unwrap } from '../supabase.js'
 import { getStockRow, setStockQuantity } from './stock.js'
 import { withSpan } from '../telemetry/withSpan.js'
+import { logger } from '../telemetry/logger.js'
 
 export const MOVEMENT_KINDS = ['receipt', 'issue', 'transfer', 'adjustment']
 
@@ -123,6 +124,17 @@ export async function recordMovement({ itemId, locationId, kind, quantity, refer
 
       span.setAttribute('inventory.movement_id', inserted[0].id)
       span.setAttribute('inventory.quantity_delta', delta)
+
+      // Stock changed. The ledger row is the record of it; this is the operational
+      // trail, correlated to the trace that made the change.
+      logger.info('Movement recorded', {
+        'inventory.movement_id': inserted[0].id,
+        'inventory.item_id': itemId,
+        'inventory.location_id': locationId,
+        'inventory.movement_kind': kind,
+        'inventory.quantity_before': current.quantity,
+        'inventory.quantity_after': nextQuantity
+      })
 
       return {
         movement: inserted[0],

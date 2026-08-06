@@ -271,6 +271,30 @@ module body runs, so Express is already resolved by then.
 
 Ten lines of renaming buys the same span name without the constraint.
 
+### Logs, correlated to traces
+
+`src/telemetry/logger.js` writes every line twice:
+
+- to **stdout**, where Vercel collects it as a runtime log. Hobby keeps those for one hour.
+- as an **OTel log record**, exported to SigNoz over OTLP.
+
+Both carry the same `trace_id` and `span_id`, so a line found in either can be followed
+into the other, and from either into the trace.
+
+```
+stdout   {"level":"warn","msg":"POST /api/movements failed", … ,"trace_id":"cf1462e1e3…"}
+SigNoz   [WARN] POST /api/movements failed  trace_id=cf1462e1e3… span_id=cb21dfae74…
+```
+
+The severity split matters: a request rejected with a 4xx logs at `warn`, a fault at
+`error`. A burst of 409s is worth seeing without it counting as an outage.
+
+With telemetry disabled the OTel side is a no-op — the logs API does nothing without a
+registered provider — and lines still reach stdout, without trace ids.
+
+A purpose-built logger is used rather than pino, to avoid a transport setup that is awkward
+in a serverless function. Pino is the production swap.
+
 ### Vercel's own observability
 
 Everything below works on the Hobby plan, alongside the SigNoz export:
@@ -300,8 +324,8 @@ is gone from Vercel Hobby; in SigNoz the trace is still there.
   here, since every route is dynamic and nothing is cached.
 - **Container boot before Node starts.** `faas.init_duration_ms` (below) measures
   initialisation from Node's start, so it is a floor on cold-start cost, not the whole of it.
-- **Logs.** `console.log` output still goes to Vercel's runtime logs, which Hobby keeps for
-  one hour. Shipping logs to SigNoz with `trace_id` correlation is a separate increment.
+- **Metrics.** No OTel metrics are configured. Traces and logs answer what this service
+  currently needs; metrics would be the next increment, for dashboards and alerting.
 
 ### Upgrading to Trace Drains later
 

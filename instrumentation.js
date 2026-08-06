@@ -6,6 +6,8 @@
 // A forgotten environment variable degrades telemetry, never the service.
 import { registerOTel } from '@vercel/otel'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http'
+import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs'
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.replace(/\/$/, '')
@@ -23,6 +25,15 @@ if (telemetryEnabled) {
     serviceName: process.env.OTEL_SERVICE_NAME ?? 'hospital-inventory',
 
     traceExporter: new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers }),
+
+    // Note the options object. As of @opentelemetry/sdk-logs 0.221 the processor
+    // takes `{ exporter }`, not a positional exporter. The positional form
+    // constructs without error and then silently drops every record.
+    logRecordProcessors: [
+      new BatchLogRecordProcessor({
+        exporter: new OTLPLogExporter({ url: `${endpoint}/v1/logs`, headers })
+      })
+    ],
 
     // "auto" keeps @vercel/otel's fetch instrumentation, which is what turns every
     // supabase-js call into a span. HttpInstrumentation adds the incoming request
