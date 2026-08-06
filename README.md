@@ -218,10 +218,15 @@ a duration.
 distinguishes "this report is slow because there is a lot to report" from "this report is
 slow because it scans everything either way".
 
-**Errors and business outcomes are recorded differently.** `withSpan` calls
-`recordException` and sets an error status when a query fails. A movement rejected for
-insufficient stock is *not* an error — it is a span event, `movement.rejected`, carrying
-what was requested and what was available. Queryable, without polluting the error rate.
+**Faults and business outcomes are recorded differently.** A Supabase failure records an
+exception and sets an error span status. A 404 for an unknown item, or a 409 for
+insufficient stock, does not — that is the system working correctly and telling the caller
+no. Marking those red would turn the error rate into a measure of how often people ask for
+something unavailable.
+
+Both still carry `app.error.status`, and a rejected movement adds a `movement.rejected`
+span event with what was requested and what was available. Queryable either way; only one
+of them pages anybody.
 
 ### Why not `instrumentation-express`
 
