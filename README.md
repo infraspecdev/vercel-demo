@@ -3,9 +3,8 @@
 A small Node.js service that manages hospital inventory — items, stock levels per
 location, and an append-only movement ledger. Express on Vercel, Supabase for data.
 
-It exists to be instrumented. The application is deliberately ordinary so that adding
-OpenTelemetry to it (a separate pull request) reads as a clear, reviewable change rather
-than as noise.
+It exists to be instrumented. See [Telemetry](#telemetry) — two files and about thirty
+lines produce full request traces.
 
 ## Getting started
 
@@ -135,6 +134,113 @@ it, because stock sitting in Central Store does not help Ward A tonight.
 locations, then compares in application code — three round trips and the slowest endpoint
 in the app. That is on purpose too: it is the request where a trace tells you something a
 log line cannot.
+
+## Telemetry
+
+OpenTelemetry traces exported over OTLP to SigNoz. Two files, about thirty lines, and no
+changes to any service or route.
+
+### Configuration
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
+SIGNOZ_INGESTION_KEY=<key>
+OTEL_SERVICE_NAME=hospital-inventory
+```
+
+Self-hosted SigNoz uses `http://localhost:4318` and needs no ingestion key.
+
+**Telemetry is opt-in.** With `OTEL_EXPORTER_OTLP_ENDPOINT` unset, the SDK is never
+registered and the app behaves exactly as it did before instrumentation existed.
+
+### What a trace looks like
+
+```
+GET /api/reports/low-stock              55.9ms   http.route=/api/reports/low-stock
+├─ fetch GET  .../rest/v1/stock         26.1ms
+├─ fetch GET  .../rest/v1/items          3.5ms
+└─ fetch GET  .../rest/v1/locations      1.7ms
+
+POST /api/movements                     25.5ms   http.route=/api/movements
+├─ fetch GET   .../rest/v1/stock         8.0ms
+├─ fetch POST  .../rest/v1/movements     3.8ms
+└─ fetch PATCH .../rest/v1/stock         1.6ms
+```
+
+The second one is the non-atomic write, visible rather than described.
+
+### How little of this is hand-written
+
+Almost none of it.
+
+**`supabase-js` calls appear on their own.** It uses `fetch`, and `@vercel/otel`
+instruments `fetch` by default. No wrappers around the data layer, no spans in
+`src/services/`.
+
+**`HttpInstrumentation` creates the request span** the Supabase spans hang from, and
+extracts inbound `traceparent` so a request from an already-traced caller joins the same
+trace. It patches `node:http`, a Node builtin, which is why it works under ESM with no
+loader flag.
+
+**Ten lines in `src/app.js` rename that span** after the matched route. HTTP
+instrumentation runs before routing, so it can only call the span `GET`; renaming on
+response finish is what makes `/items/1` and `/items/2` aggregate as `/items/:id`.
+
+Deployment environment, region, git commit SHA, and deployment id come from `@vercel/otel`
+automatically, derived from Vercel's system environment variables.
+
+### Why not `instrumentation-express`
+
+It would add route and middleware spans with no code at all. It patches a userland
+package, which under ESM needs `--experimental-loader` at process start — and Vercel
+provides no way to pass Node flags to the function runtime. It cannot be registered from
+inside `instrumentation.js` either, because ESM loads the whole module graph before any
+module body runs, so Express is already resolved by then.
+
+Ten lines of renaming buys the same span name without the constraint.
+
+### Vercel's own observability
+
+Everything below works on the Hobby plan, alongside the SigNoz export:
+
+- **Observability tab** — error rate, invocations, duration per route, plus an External
+  APIs section where the Supabase calls appear.
+- **Session Tracing** — start from the Vercel toolbar. 1M spans/month/team on every plan.
+  Shows Vercel's infrastructure spans as well as these.
+- **`vercel curl --trace /api/reports/low-stock`**, then `vercel traces get <id> --open`.
+
+| | Vercel | SigNoz |
+| --- | --- | --- |
+| Infrastructure spans (CDN, routing, cold start) | ✅ | ❌ |
+| Application and Supabase spans | ✅ | ✅ |
+| Coverage | opt-in session | every request |
+| Log retention | **1 hour** on Hobby | as configured |
+
+**Vercel shows you now. SigNoz shows you then.** An incident at 14:00 investigated at 16:00
+is gone from Vercel Hobby; in SigNoz the trace is still there.
+
+### What is not captured
+
+- **Time before the code runs** — CDN routing, queueing, container boot. Vercel Trace
+  Drains close this gap by forwarding infrastructure spans directly, but they need a **Pro
+  or Enterprise** plan ($0.50 per drains volume unit).
+- **Requests that never reach the function** — CDN cache hits, edge 404s. Close to zero
+  here, since every route is dynamic and nothing is cached.
+- **Domain attributes.** Traces show *which* Supabase URL was called and how long it took,
+  but not `inventory.movement_kind` or `inventory.low_stock_count`. Adding those means
+  hand-written spans in the service layer — worth doing when a specific question demands
+  it, not before.
+- **Logs.** `console.log` output still goes to Vercel's runtime logs, which Hobby keeps for
+  one hour. Shipping logs to SigNoz with `trace_id` correlation is a separate increment.
+
+### Upgrading to Trace Drains later
+
+1. Upgrade to Pro.
+2. Add a Trace Drain pointing at the SigNoz OTLP endpoint.
+3. Remove the exporter from `instrumentation.js`.
+
+Step 3 is a subtraction — `registerOTel()` stays. Do not run both in steady state: spans
+would arrive twice by different paths and appear duplicated.
 
 ## Not included
 

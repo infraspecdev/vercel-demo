@@ -1,13 +1,39 @@
 import express from 'express'
+import { trace } from '@opentelemetry/api'
 
 import apiRoutes from './routes/api.js'
 import pageRoutes from './routes/pages.js'
 import { layout, esc } from './views/layout.js'
 
+/**
+ * Names the request span after the matched Express route.
+ *
+ * HTTP instrumentation creates the span before routing has happened, so it can
+ * only call it `GET`. The route is known once the response is finishing, and
+ * renaming it there is what makes /items/1 and /items/2 aggregate as
+ * /items/:id instead of becoming thousands of distinct span names.
+ *
+ * No-op when telemetry is disabled: getActiveSpan returns a non-recording span.
+ */
+function nameSpanAfterRoute(req, res, next) {
+  const span = trace.getActiveSpan()
+
+  res.on('finish', () => {
+    if (!span || !req.route) return
+
+    const route = `${req.baseUrl}${req.route.path}`
+    span.updateName(`${req.method} ${route}`)
+    span.setAttribute('http.route', route)
+  })
+
+  next()
+}
+
 export function createApp() {
   const app = express()
 
   app.disable('x-powered-by')
+  app.use(nameSpanAfterRoute)
   app.use(express.json())
   app.use(express.urlencoded({ extended: false }))
 
