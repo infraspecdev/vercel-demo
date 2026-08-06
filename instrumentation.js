@@ -32,6 +32,12 @@ if (telemetryEnabled) {
   })
 }
 
+// registerOTel accepts `attributesFromHeaders`, which looks like the right way to put
+// `x-vercel-id` on the request span. It does not apply here: it decorates spans
+// @vercel/otel creates itself, and the request span in this app comes from
+// HttpInstrumentation. Measured — the attribute never appeared. src/telemetry
+// reads the header directly instead.
+
 // Not used here: @opentelemetry/instrumentation-express. It would add route and
 // middleware spans with no code at all, but patching a userland package under ESM
 // needs a loader flag at process start (`--experimental-loader`), and Vercel gives

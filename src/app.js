@@ -4,6 +4,7 @@ import { trace } from '@opentelemetry/api'
 import apiRoutes from './routes/api.js'
 import pageRoutes from './routes/pages.js'
 import { layout, esc } from './views/layout.js'
+import { platformContext } from './telemetry/platformContext.js'
 
 /**
  * Records where a router is mounted, while that information is still available.
@@ -46,6 +47,7 @@ export function createApp() {
   const app = express()
 
   app.disable('x-powered-by')
+  app.use(platformContext)
   app.use(nameSpanAfterRoute)
   app.use(express.json())
   app.use(express.urlencoded({ extended: false }))
