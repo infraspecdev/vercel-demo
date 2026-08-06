@@ -1,0 +1,135 @@
+name: Deploy
+
+# Pull requests get a preview deployment with the URL posted back as a comment.
+# Pushes to main go to production.
+#
+# Vercel's own Git integration is switched off in vercel.json. Without that,
+# every push would be built twice — once by Vercel, once here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the in-flight deployment irrelevant.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write # to comment the preview URL
+
+    # Production for main, preview for everything else. Derived once and
+    # referenced throughout, so the two paths cannot drift apart.
+    env:
+      IS_PRODUCTION: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Catches a broken import before anything is deployed. `vercel build`
+      # would also fail, but this fails in seconds and says why.
+      - name: Check the app builds
+        run: |
+          npm ci
+          node -e "import('./src/app.js').then(m => m.createApp())"
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel environment
+        run: |
+          vercel pull --yes \
+            --environment=${{ env.IS_PRODUCTION == 'true' && 'production' || 'preview' }} \
+            --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build ${{ env.IS_PRODUCTION == 'true' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      # --prebuilt uploads .vercel/output rather than rebuilding on Vercel.
+      # The CLI writes progress to stderr and the URL to stdout; take the last
+      # line so a stray line of output cannot become the URL.
+      - name: Deploy
+        id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt \
+            ${{ env.IS_PRODUCTION == 'true' && '--prod' || '' }} \
+            --token=${{ secrets.VERCEL_TOKEN }} | tail -1)
+
+          if [ -z "$url" ]; then
+            echo "::error::vercel deploy produced no URL"
+            exit 1
+          fi
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"
+
+      # A green deploy is not a working app. /health needs no database, so it
+      # separates "did it deploy" from "is Supabase reachable".
+      #
+      # 401 means the deployment exists but Vercel Deployment Protection is
+      # gating it. That is a project setting, not a broken build, so it is
+      # reported rather than failed.
+      - name: Verify deployment responds
+        run: |
+          for attempt in 1 2 3 4 5; do
+            # curl writes 000 itself when it cannot connect, and exits non-zero.
+            # `|| true` stops that exit code aborting the step under `bash -e`;
+            # piping in another 000 would corrupt the status into "000000".
+            status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+              "${{ steps.deploy.outputs.url }}/health") || true
+
+            case "$status" in
+              200)
+                echo "/health returned 200"
+                exit 0
+                ;;
+              401|403)
+                echo "::warning::/health returned $status — the deployment is behind Vercel Deployment Protection, so it could not be checked. Disable it for previews to enable this smoke test."
+                exit 0
+                ;;
+            esac
+
+            echo "attempt $attempt: /health returned $status, retrying in 5s"
+            sleep 5
+          done
+
+          echo "::error::/health never returned 200 (last status: $status)"
+          exit 1
+
+      # Written to a file rather than passed inline: an indented YAML block
+      # would carry its leading whitespace into the comment and break the table.
+      - name: Comment preview URL
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          cat > comment.md <<EOF
+          Preview deployment: $URL
+
+          | Link | |
+          | --- | --- |
+          | Dashboard | $URL/ |
+          | Low stock report | $URL/api/reports/low-stock |
+          | Movements | $URL/movements |
+          | Health | $URL/health |
+
+          Commit \`${{ github.sha }}\`
+          EOF
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --edit-last --create-if-none --body-file comment.md

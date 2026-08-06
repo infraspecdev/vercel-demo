@@ -44,9 +44,57 @@ false` and every data route returns `503` with an explanation, rather than crash
 
 ## Deploying to Vercel
 
-Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as Environment Variables in the Vercel
-project, then push. No build step, no framework preset — `vercel.json` rewrites every path
-to a single function.
+Deployment runs from GitHub Actions (`.github/workflows/deploy.yml`), not from Vercel's Git
+integration:
+
+| Trigger | Result |
+| --- | --- |
+| Pull request | Preview deployment, URL posted as a PR comment |
+| Push to `main` | Production deployment |
+
+Every deployment builds in CI, uploads with `--prebuilt`, then smoke-tests `/health` before
+the job passes.
+
+### One-time setup
+
+**1. Link the project** and read the ids it writes:
+
+```bash
+npx vercel link
+cat .vercel/project.json    # orgId and projectId
+```
+
+**2. Create a token** at [vercel.com/account/tokens](https://vercel.com/account/tokens).
+
+**3. Add three repository secrets** under Settings → Secrets and variables → Actions:
+
+| Secret | Value |
+| --- | --- |
+| `VERCEL_TOKEN` | the token from step 2 |
+| `VERCEL_ORG_ID` | `orgId` from `.vercel/project.json` |
+| `VERCEL_PROJECT_ID` | `projectId` from `.vercel/project.json` |
+
+**4. Set runtime environment variables in Vercel**, not in GitHub — `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, and the telemetry variables. `vercel pull` fetches them at
+build time, and the function reads them at runtime.
+
+`.vercel/` is gitignored; it holds a local link, not a secret worth committing.
+
+### Why the Git integration is off
+
+`vercel.json` sets `git.deploymentEnabled: false`. Without it, a push would be built twice —
+once by Vercel's integration and once by this workflow — doubling build minutes and
+producing two deployments per commit.
+
+To go back to Vercel-managed deploys, delete the workflow and remove that flag.
+
+### If the smoke test warns instead of passing
+
+Vercel Deployment Protection returns `401` on preview URLs. The workflow reports this as a
+warning rather than a failure, since it means the deployment succeeded but could not be
+reached. Turn protection off for previews to make the check meaningful.
+
+No build step, no framework preset — `vercel.json` rewrites every path to a single function.
 
 ## Layout
 
