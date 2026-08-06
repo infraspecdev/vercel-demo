@@ -6,6 +6,19 @@ import pageRoutes from './routes/pages.js'
 import { layout, esc } from './views/layout.js'
 
 /**
+ * Records where a router is mounted, while that information is still available.
+ *
+ * `req.baseUrl` is only correct *inside* the router. When a handler throws, Express
+ * unwinds back to the app before the response finishes and resets `req.baseUrl` to
+ * `''` — so reading it later turns `/api/movements` into `/movements`, and every
+ * error response gets filed under the wrong route.
+ */
+function recordMount(req, _res, next) {
+  req.mountPath = req.baseUrl
+  next()
+}
+
+/**
  * Names the request span after the matched Express route.
  *
  * HTTP instrumentation creates the span before routing has happened, so it can
@@ -21,7 +34,7 @@ function nameSpanAfterRoute(req, res, next) {
   res.on('finish', () => {
     if (!span || !req.route) return
 
-    const route = `${req.baseUrl}${req.route.path}`
+    const route = `${req.mountPath ?? req.baseUrl}${req.route.path}`
     span.updateName(`${req.method} ${route}`)
     span.setAttribute('http.route', route)
   })
@@ -44,8 +57,8 @@ export function createApp() {
     })
   })
 
-  app.use('/api', apiRoutes)
-  app.use('/', pageRoutes)
+  app.use('/api', recordMount, apiRoutes)
+  app.use('/', recordMount, pageRoutes)
 
   app.use((req, res) => {
     res.status(404)
