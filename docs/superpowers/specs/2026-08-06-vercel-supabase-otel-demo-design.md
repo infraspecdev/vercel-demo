@@ -352,3 +352,53 @@ or PR descriptions.
 | Span loss on function freeze | `@vercel/otel` manages the lifecycle; verify with a deployed request before the demo |
 | Express root spans may not be route-named automatically | Create the root span explicitly in middleware using the matched route |
 | SigNoz Cloud region affects the OTLP endpoint URL | Parameterised via env var, not hardcoded |
+
+## Implementation notes
+
+Recorded after building it. Where the delivered code differs from the design above, the
+code is correct and this section says why.
+
+**Low stock is compared per location, not per item.** The design implied a per-item total.
+Against the seeded data that returns zero rows every time — eight locations of stock always
+exceed a reorder level of 10–49. Per location it returns ~174 rows, and it is the better
+domain model anyway: reordering happens for a place.
+
+**`POST /api/movements` is three round trips, not two.** Applying a delta requires reading
+the current quantity first, since there is no DB function to do it atomically. Read, insert,
+write. This strengthens rather than weakens the tracing story.
+
+**Resource attributes were dropped from the plan.** The design listed
+`deployment.environment`, `vercel.region`, `vercel.deployment_id` and `git.commit_sha` as
+things to set. Reading `@vercel/otel`'s types showed it already derives all of them from
+Vercel's system environment variables, as `deployment.environment.name`, `cloud.region`,
+`deployment.id` and `vcs.ref.head.revision`. Setting them again would be duplicated config
+that silently drifts.
+
+**`x-vercel-id` is captured declaratively** via `registerOTel`'s `attributesFromHeaders`,
+rather than in custom middleware.
+
+**`traceContext.js` and `platform.js` were merged into `requestSpan.js`.** Inbound context
+extraction, the root span, and the cold-start attributes are one concern — they all happen
+once per request, in that order. Three files would have been three ways to say "per
+request".
+
+**A silent-failure bug in `@opentelemetry/sdk-logs` 0.221.** Log record processors take an
+options object, not a positional exporter: `new BatchLogRecordProcessor({ exporter })`. The
+positional form constructs without error and then drops every record. Found by running
+against a local OTLP receiver. Commented at the call site.
+
+**Verification used two local stubs** — a PostgREST stub seeded to match `schema.sql`, and
+an OTLP receiver standing in for SigNoz. Both live in scratchpad and are not committed.
+Nothing has been verified against a real Supabase project or a real SigNoz instance,
+because no credentials exist yet. That is the first thing to do once they do.
+
+### Success criteria status
+
+Met: base app runs and deploys without telemetry; all endpoints and pages return correct
+data; PR #2's diff is readable end to end; low-stock and movement traces have the intended
+shape; console and SigNoz log copies share a `trace_id`; telemetry-disabled behaviour
+matches `main`; README documents setup, the Hobby/Pro split, the drains upgrade path, the
+non-atomic caveat, and the demo script.
+
+Outstanding: nothing verified against real Supabase, real SigNoz, or a real Vercel
+deployment.
