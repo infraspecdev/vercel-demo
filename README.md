@@ -230,6 +230,27 @@ duration.
 distinguishes "this report is slow because there is a lot to report" from "this report is
 slow because it scans everything either way".
 
+### Platform context
+
+`src/telemetry/platformContext.js` adds three attributes to the request span.
+
+| Attribute | Meaning |
+| --- | --- |
+| `faas.coldstart` | `true` on the first request through an instance, `false` after |
+| `faas.init_duration_ms` | `process.uptime()` at that first request; cold starts only |
+| `vercel.request_id` | the `x-vercel-id` header; absent locally |
+
+`faas.init_duration_ms` covers module loading, the Supabase client, and the OTel SDK. It
+does not include container boot before Node started, which is not observable from inside
+the function — treat it as a floor.
+
+`vercel.request_id` is what matches a SigNoz trace to the same request in Vercel's runtime
+logs.
+
+`registerOTel` accepts an `attributesFromHeaders` option that appears to cover the last of
+these. It does not apply here: it decorates spans `@vercel/otel` creates itself, and the
+request span in this app comes from `HttpInstrumentation`. The header is read directly.
+
 **Faults and business outcomes are recorded differently.** A Supabase failure records an
 exception and sets an error span status. A 404 for an unknown item, or a 409 for
 insufficient stock, does not — that is the system working correctly and telling the caller
@@ -277,10 +298,8 @@ is gone from Vercel Hobby; in SigNoz the trace is still there.
   or Enterprise** plan ($0.50 per drains volume unit).
 - **Requests that never reach the function** — CDN cache hits, edge 404s. Close to zero
   here, since every route is dynamic and nothing is cached.
-- **Cold starts.** `@vercel/otel` reports region and deployment, but not whether an
-  instance was cold. A module-level flag plus `process.uptime()` on the first request would
-  measure initialisation — though not the container boot before Node started, which stays
-  invisible from inside.
+- **Container boot before Node starts.** `faas.init_duration_ms` (below) measures
+  initialisation from Node's start, so it is a floor on cold-start cost, not the whole of it.
 - **Logs.** `console.log` output still goes to Vercel's runtime logs, which Hobby keeps for
   one hour. Shipping logs to SigNoz with `trace_id` correlation is a separate increment.
 
