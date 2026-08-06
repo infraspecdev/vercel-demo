@@ -17,16 +17,25 @@ function defined(attributes = {}) {
  * Used only in the service layer. Because every Supabase call is confined there,
  * wrapping that one layer covers every route and page.
  *
- * The span also records exceptions and sets an error status, so a failed query is
- * visible as a red span rather than only as an HTTP 500.
+ * Only server faults are marked as span errors. A 404 for an unknown item, or a 409
+ * for insufficient stock, is the system working correctly and telling the caller no —
+ * marking those red would make the error rate a measure of how often users ask for
+ * something unavailable, which is not what anyone wants to be paged about. They still
+ * carry `app.error.status`, so they remain queryable.
  */
 export function withSpan(name, attributes, fn) {
   return tracer.startActiveSpan(name, { attributes: defined(attributes) }, async (span) => {
     try {
       return await fn(span)
     } catch (error) {
-      span.recordException(error)
-      span.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
+      const status = error.status ?? 500
+      span.setAttribute('app.error.status', status)
+
+      if (status >= 500) {
+        span.recordException(error)
+        span.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
+      }
+
       throw error
     } finally {
       span.end()
