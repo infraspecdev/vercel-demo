@@ -156,15 +156,19 @@ registered and the app behaves exactly as it did before instrumentation existed.
 ### What a trace looks like
 
 ```
-GET /api/reports/low-stock              55.9ms   http.route=/api/reports/low-stock
-├─ fetch GET  .../rest/v1/stock         26.1ms
-├─ fetch GET  .../rest/v1/items          3.5ms
-└─ fetch GET  .../rest/v1/locations      1.7ms
+GET /api/reports/low-stock                 83.5ms  http.route=/api/reports/low-stock
+└─ inventory.stock.lowStock                74.9ms  stock_rows_scanned=1920 low_stock_count=174
+   ├─ fetch GET  .../rest/v1/stock         39.1ms
+   ├─ fetch GET  .../rest/v1/items          6.2ms
+   └─ fetch GET  .../rest/v1/locations      1.4ms
 
-POST /api/movements                     25.5ms   http.route=/api/movements
-├─ fetch GET   .../rest/v1/stock         8.0ms
-├─ fetch POST  .../rest/v1/movements     3.8ms
-└─ fetch PATCH .../rest/v1/stock         1.6ms
+POST /api/movements                        47.5ms  http.route=/api/movements
+└─ inventory.movements.record              25.2ms  movement_kind=issue quantity_delta=-3
+   ├─ inventory.stock.read                 15.8ms  quantity_before=110
+   │  └─ fetch GET   .../rest/v1/stock     14.1ms
+   ├─ fetch POST  .../rest/v1/movements     5.1ms
+   └─ inventory.stock.write                 2.6ms  quantity_after=107
+      └─ fetch PATCH .../rest/v1/stock      1.9ms
 ```
 
 The second one is the non-atomic write, visible rather than described.
@@ -188,6 +192,48 @@ response finish is what makes `/items/1` and `/items/2` aggregate as `/items/:id
 
 Deployment environment, region, git commit SHA, and deployment id come from `@vercel/otel`
 automatically, derived from Vercel's system environment variables.
+
+### Custom instrumentation: the part that has to be hand-written
+
+Auto-instrumentation reports *that* a Supabase call happened and how long it took. It
+cannot know what the application was doing, or with which item and location. That is what
+`src/telemetry/withSpan.js` adds — one helper, used only in `src/services/`.
+
+```js
+export async function recordMovement({ itemId, locationId, kind, quantity }) {
+  return withSpan(
+    'inventory.movements.record',
+    { 'inventory.item_id': itemId, 'inventory.movement_kind': kind },
+    async (span) => { /* ... */ }
+  )
+}
+```
+
+The service layer is the only place Supabase is called, so wrapping that one layer covers
+every route and page.
+
+**Attributes worth querying**
+
+| Attribute | On |
+| --- | --- |
+| `inventory.item_id`, `inventory.location_id`, `inventory.location_code` | most operations |
+| `inventory.movement_kind`, `inventory.quantity`, `inventory.quantity_delta` | recording a movement |
+| `inventory.quantity_before`, `inventory.quantity_after` | stock reads and writes |
+| `inventory.low_stock_count`, `inventory.stock_rows_scanned` | the low-stock report |
+| `inventory.result_count` | every list operation |
+
+These turn traces into questions a hospital would actually ask. *"Every trace where
+`inventory.movement_kind = issue` took over 500ms"* is not answerable from a URL and a
+duration.
+
+`inventory.stock_rows_scanned` alongside `inventory.low_stock_count` is the pair that
+distinguishes "this report is slow because there is a lot to report" from "this report is
+slow because it scans everything either way".
+
+**Errors and business outcomes are recorded differently.** `withSpan` calls
+`recordException` and sets an error status when a query fails. A movement rejected for
+insufficient stock is *not* an error — it is a span event, `movement.rejected`, carrying
+what was requested and what was available. Queryable, without polluting the error rate.
 
 ### Why not `instrumentation-express`
 
@@ -226,10 +272,10 @@ is gone from Vercel Hobby; in SigNoz the trace is still there.
   or Enterprise** plan ($0.50 per drains volume unit).
 - **Requests that never reach the function** — CDN cache hits, edge 404s. Close to zero
   here, since every route is dynamic and nothing is cached.
-- **Domain attributes.** Traces show *which* Supabase URL was called and how long it took,
-  but not `inventory.movement_kind` or `inventory.low_stock_count`. Adding those means
-  hand-written spans in the service layer — worth doing when a specific question demands
-  it, not before.
+- **Cold starts.** `@vercel/otel` reports region and deployment, but not whether an
+  instance was cold. A module-level flag plus `process.uptime()` on the first request would
+  measure initialisation — though not the container boot before Node started, which stays
+  invisible from inside.
 - **Logs.** `console.log` output still goes to Vercel's runtime logs, which Hobby keeps for
   one hour. Shipping logs to SigNoz with `trace_id` correlation is a separate increment.
 
