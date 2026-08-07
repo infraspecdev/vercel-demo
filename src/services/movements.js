@@ -2,6 +2,7 @@ import { getSupabase, unwrap } from '../supabase.js'
 import { getStockRow, setStockQuantity } from './stock.js'
 import { withSpan } from '../telemetry/withSpan.js'
 import { logger } from '../telemetry/logger.js'
+import { recordUnitsMoved } from '../telemetry/metrics.js'
 
 export const MOVEMENT_KINDS = ['receipt', 'issue', 'transfer', 'adjustment']
 
@@ -135,6 +136,10 @@ export async function recordMovement({ itemId, locationId, kind, quantity, refer
         'inventory.quantity_before': current.quantity,
         'inventory.quantity_after': nextQuantity
       })
+
+      // Counted only after both writes land. A rejected or failed movement moved
+      // no stock, so counting it earlier would overstate throughput.
+      recordUnitsMoved({ kind, locationId, quantity })
 
       return {
         movement: inserted[0],

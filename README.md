@@ -64,6 +64,7 @@ src/
     withSpan.js         Wraps a service call in a span with domain attributes
     platformContext.js  Cold start and Vercel request id
     logger.js           Logs to stdout and to SigNoz, with trace ids
+    metrics.js          Business counters
 ```
 
 Two entrypoints, one app. Neither holds logic — both import `src/app.js`.
@@ -263,6 +264,35 @@ module body runs, so Express is already resolved by then.
 
 Ten lines of renaming buys the same span name without the constraint.
 
+### Business metrics
+
+One counter, in `src/telemetry/metrics.js`.
+
+| Metric | Type | Attributes |
+| --- | --- | --- |
+| `inventory.units_moved` | Counter | `inventory.movement_kind`, `inventory.location_id` |
+
+Units, not events. One movement of 500 units and 500 movements of 1 unit are the same
+row count and very different business activity — a request-rate chart cannot tell them
+apart.
+
+Always incremented by a positive number. Direction lives in `movement_kind`, so one series
+sums to total throughput or splits to compare receipts against issues.
+
+Incremented only after both writes land. A rejected or failed movement moved no stock.
+
+**Attributes are kept deliberately small.** 4 kinds across 8 locations is 32 series. Item id
+is excluded — 240 items would be 7,680 series for one counter, and per-item volume is a
+question for the ledger, not a metric.
+
+**DELTA temporality is required, not a preference.** Each function instance keeps its own
+counter and instances come and go. Under the default CUMULATIVE the backend sees many
+independent running totals that restart at zero, and summing them is wrong. DELTA reports
+"what happened since the last export", which merges correctly across instances.
+
+The export interval is 10s. A frozen function exports nothing, so a short interval means
+anything still buffered is late rather than lost.
+
 ### Logs, correlated to traces
 
 `src/telemetry/logger.js` writes every line twice:
@@ -315,8 +345,11 @@ is gone from Vercel Hobby; in SigNoz the trace is still there.
   Enterprise** plan ($0.50 per drains volume unit).
 - **Requests that never reach the function** — CDN cache hits, edge 404s. Close to zero
   here, since every route is dynamic and nothing is cached.
-- **Metrics.** No OTel metrics are configured. Traces and logs answer what this service
-  currently needs; metrics would be the next increment, for dashboards and alerting.
+- **Stock levels as a metric.** `inventory.low_stock_count` exists as a span attribute, so
+  it is only computed when someone calls the report. A gauge meaning "the last time anyone
+  looked, it was 174" is misleading on a dashboard and worse in an alert. Measuring it
+  continuously needs a scheduled reader, which a function that freezes between requests
+  cannot provide.
 
 ### Upgrading to Trace Drains later
 

@@ -8,6 +8,11 @@ import { registerOTel } from '@vercel/otel'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http'
 import { BatchLogRecordProcessor } from '@opentelemetry/sdk-logs'
+import {
+  OTLPMetricExporter,
+  AggregationTemporalityPreference
+} from '@opentelemetry/exporter-metrics-otlp-http'
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.replace(/\/$/, '')
@@ -32,6 +37,25 @@ if (telemetryEnabled) {
     logRecordProcessors: [
       new BatchLogRecordProcessor({
         exporter: new OTLPLogExporter({ url: `${endpoint}/v1/logs`, headers })
+      })
+    ],
+
+    // DELTA temporality is not optional here. Each function instance keeps its own
+    // counter, and instances come and go. Under the default CUMULATIVE the backend
+    // sees many independent running totals that restart at zero, and summing them
+    // is wrong. DELTA reports "what happened since the last export", which merges
+    // correctly across instances.
+    //
+    // The short interval is also deliberate: a frozen function exports nothing, so
+    // anything still buffered when it freezes is late rather than lost.
+    metricReaders: [
+      new PeriodicExportingMetricReader({
+        exporter: new OTLPMetricExporter({
+          url: `${endpoint}/v1/metrics`,
+          headers,
+          temporalityPreference: AggregationTemporalityPreference.DELTA
+        }),
+        exportIntervalMillis: 10_000
       })
     ],
 
