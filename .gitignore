@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.local
+.vercel
+*.log
+.DS_Store
+
+# Local tooling. Holds git worktrees, each a full copy of the repo.
+.claude/
