@@ -180,8 +180,8 @@ instruments `fetch` by default. No wrappers around the data layer, no spans in
 
 **`HttpInstrumentation` creates the request span** the Supabase spans hang from, and
 extracts inbound `traceparent` so a request from an already-traced caller joins the same
-trace. It patches `node:http`, a Node builtin, which is why it works under ESM with no
-loader flag.
+trace. `registerOTel` alone does not produce it — see
+[Does not work out of the box][docs-notfree].
 
 **Ten lines in `src/app.js` rename that span** after the matched route. HTTP
 instrumentation runs before routing, so it can only call the span `GET`; renaming on
@@ -190,13 +190,10 @@ response finish is what makes `/items/1` and `/items/2` aggregate as `/items/:id
 Deployment environment, region, git commit SHA, and deployment id come from `@vercel/otel`
 automatically, derived from Vercel's system environment variables.
 
-**One caveat when querying.** The two instrumentations use different semantic conventions.
-The request span carries `http.request.method` and `http.response.status_code`; the Supabase
-spans carry `http.method` and `http.status_code`. A filter written for one set silently
-matches none of the other's spans. Neither library still offers the
-`OTEL_SEMCONV_STABILITY_OPT_IN` knob, and replacing the fetch instrumentation was
-prototyped and rejected — the reasoning and the measurements are in
-[`docs/opentelemetry-on-vercel.md`](./docs/opentelemetry-on-vercel.md#semantic-conventions-are-split).
+**One caveat when querying.** The request span and the Supabase spans use different HTTP
+semantic conventions — `http.response.status_code` on one, `http.status_code` on the other
+— so a filter written for one set silently matches none of the other's. Both key sets, and
+why this is not fixable in config, are in [Semantic conventions are split][docs-semconv].
 
 ### Custom instrumentation: the part that has to be hand-written
 
@@ -252,9 +249,8 @@ the function — treat it as a floor.
 `vercel.request_id` is what matches a SigNoz trace to the same request in Vercel's runtime
 logs.
 
-`registerOTel` accepts an `attributesFromHeaders` option that appears to cover the last of
-these. It does not apply here: it decorates spans `@vercel/otel` creates itself, and the
-request span in this app comes from `HttpInstrumentation`. The header is read directly.
+`registerOTel`'s `attributesFromHeaders` option looks like it covers the last of these. It
+does not — see [Does not work out of the box][docs-notfree]. The header is read directly.
 
 **Faults and business outcomes are recorded differently.** A Supabase failure records an
 exception and sets an error span status. A 404 for an unknown item, or a 409 for
@@ -268,13 +264,10 @@ of them pages anybody.
 
 ### Why not `instrumentation-express`
 
-It would add route and middleware spans with no code at all. It patches a userland
-package, which under ESM needs `--experimental-loader` at process start — and Vercel
-provides no way to pass Node flags to the function runtime. It cannot be registered from
-inside `instrumentation.js` either, because ESM loads the whole module graph before any
-module body runs, so Express is already resolved by then.
+It would add route and middleware spans with no code at all, and it is unavailable here —
+three separate reasons, all measured, in [Does not work out of the box][docs-notfree].
 
-Ten lines of renaming buys the same span name without the constraint.
+Ten lines of renaming in `src/app.js` buys the same span name without the constraint.
 
 ### Business metrics
 
@@ -331,12 +324,9 @@ in a serverless function. Pino is the production swap.
 
 ### Trace context into Supabase
 
-The trace stops at the network boundary unless something carries it across. `@vercel/otel`
-does not: its `fetch` instrumentation propagates context only to same-origin and Vercel
-deployment URLs, and `supabase.co` is neither. Every Supabase call was traced on our side
-and anonymous on theirs.
-
-`src/supabase.js` turns on `supabase-js`'s own propagation:
+The trace stops at the network boundary unless something carries it across, and
+`@vercel/otel` does not carry it to Supabase. `src/supabase.js` turns on `supabase-js`'s
+own propagation:
 
 ```js
 import '@supabase/supabase-js/tracing'
@@ -344,27 +334,15 @@ import '@supabase/supabase-js/tracing'
 createClient(url, key, { …, tracePropagation: true })
 ```
 
-The import registers the OpenTelemetry extractor; the option switches it on. Both are
-needed — the option alone logs a one-time warning and sends nothing, which is why they sit
-in the same file. No new dependency: `@opentelemetry/api` is already here, and the subpath
-ships with `supabase-js` 2.112.
+Both lines are needed, and no new dependency is: `@opentelemetry/api` is already here and
+the subpath ships with `supabase-js` 2.112.
 
 Every Supabase request now carries `traceparent`, and that `trace_id` appears in Supabase's
-API Gateway logs. The same id identifies the trace in SigNoz, so an slow PostgREST call can
+API Gateway logs. The same id identifies the trace in SigNoz, so a slow PostgREST call can
 be read from either side.
 
-Two things worth knowing:
-
-- **The header names the service span, not the `fetch` span.** `supabase-js` builds its
-  headers before the patched `fetch` opens its span, so the active context is still
-  `inventory.items.list`. Same trace either way, and `trace_id` is the join key, so this
-  only matters if exact parent-child nesting across the boundary is ever wanted.
-- **`respectSamplingDecision` is left at its default of `true`.** Nothing is sampled out
-  today, so it changes nothing. Adding a sampler later would stop unsampled requests
-  carrying a `trace_id` into Supabase's logs; set it to `false` to keep tagging them.
-
-The header only ever goes to `*.supabase.co`, `*.supabase.in` and `localhost` —
-`supabase-js` enforces that, so a custom `fetch` to a third-party host is never tagged.
+Why `@vercel/otel` will not do this, which span the header names, the sampling tradeoff and
+the domain allowlist are in [Outbound trace context][docs-outbound].
 
 ### Vercel's own observability
 
@@ -414,3 +392,13 @@ would arrive twice by different paths and appear duplicated.
 Authentication, RLS policies, and multi-tenancy are all absent. `purchase_orders` and
 `purchase_order_lines` exist in the schema but have no endpoints — they are not needed for
 what this service is demonstrating.
+
+## Further reading
+
+[`docs/opentelemetry-on-vercel.md`](./docs/opentelemetry-on-vercel.md) — why the libraries
+behave the way they do. Everything there is measured against a local OTLP receiver. This
+file covers what the service captures; that one covers what fought back.
+
+[docs-notfree]: ./docs/opentelemetry-on-vercel.md#does-not-work-out-of-the-box
+[docs-outbound]: ./docs/opentelemetry-on-vercel.md#outbound-trace-context
+[docs-semconv]: ./docs/opentelemetry-on-vercel.md#semantic-conventions-are-split
