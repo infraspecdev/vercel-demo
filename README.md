@@ -144,8 +144,10 @@ OTEL_AUTH_TOKEN=<token>
 OTEL_SERVICE_NAME=inventory-service
 ```
 
-`OTEL_AUTH_TOKEN` is sent as the `otel-auth-token` header on every OTLP export. Leave it
-unset for a collector that needs no auth — no header is sent, which is not an error.
+`OTEL_AUTH_TOKEN` holds the bare token and is sent as `Authorization: Bearer <token>` on
+every OTLP export — the `Bearer ` prefix is added in code, so the variable itself is a
+plain credential. Leave it unset for a collector that needs no auth; no header is sent,
+which is not an error.
 
 **Telemetry is opt-in.** With `OTEL_EXPORTER_OTLP_ENDPOINT` unset, the SDK is never
 registered and the app behaves exactly as it did before instrumentation existed.
