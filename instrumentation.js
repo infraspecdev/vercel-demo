@@ -20,11 +20,14 @@ const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.replace(/\/$/, '')
 export const telemetryEnabled = Boolean(endpoint)
 
 if (telemetryEnabled) {
-  // The collector authenticates on a plain `otel-auth-token` header — no
-  // `Authorization` scheme, the token is the whole value. A collector that
-  // needs no auth is not an error, so an absent value just sends no header.
+  // The collector authenticates on `Authorization: Bearer <token>`.
+  // OTEL_AUTH_TOKEN holds the bare token — the `Bearer ` prefix is added here,
+  // so the deployed environment variable stays a plain credential.
+  //
+  // A collector that needs no auth is not an error, so an absent value just
+  // sends no header.
   const headers = process.env.OTEL_AUTH_TOKEN
-    ? { 'otel-auth-token': process.env.OTEL_AUTH_TOKEN }
+    ? { Authorization: `Bearer ${process.env.OTEL_AUTH_TOKEN}` }
     : {}
 
   registerOTel({
