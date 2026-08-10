@@ -190,6 +190,14 @@ response finish is what makes `/items/1` and `/items/2` aggregate as `/items/:id
 Deployment environment, region, git commit SHA, and deployment id come from `@vercel/otel`
 automatically, derived from Vercel's system environment variables.
 
+**One caveat when querying.** The two instrumentations use different semantic conventions.
+The request span carries `http.request.method` and `http.response.status_code`; the Supabase
+spans carry `http.method` and `http.status_code`. A filter written for one set silently
+matches none of the other's spans. Neither library still offers the
+`OTEL_SEMCONV_STABILITY_OPT_IN` knob, and replacing the fetch instrumentation was
+prototyped and rejected — the reasoning and the measurements are in
+[`docs/opentelemetry-on-vercel.md`](./docs/opentelemetry-on-vercel.md#semantic-conventions-are-split).
+
 ### Custom instrumentation: the part that has to be hand-written
 
 Auto-instrumentation reports *that* a Supabase call happened and how long it took. It
