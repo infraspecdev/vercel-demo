@@ -139,11 +139,13 @@ correlation — is hand-written, and each piece is described below.
 
 ```bash
 OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
-SIGNOZ_INGESTION_KEY=<key>
+OTEL_AUTH_TOKEN=<token>
 OTEL_SERVICE_NAME=inventory-service
 ```
 
-Self-hosted SigNoz uses `http://localhost:4318` and needs no ingestion key.
+`OTEL_AUTH_TOKEN` is sent as the `otel-auth-token` header on every OTLP export. A
+self-hosted collector on `http://localhost:4318` typically needs no auth — leave it unset
+and no header is sent.
 
 **Telemetry is opt-in.** With `OTEL_EXPORTER_OTLP_ENDPOINT` unset, the SDK is never
 registered and the app behaves exactly as it did before instrumentation existed.
