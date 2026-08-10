@@ -77,6 +77,12 @@ if (telemetryEnabled) {
 // HttpInstrumentation. Measured — the attribute never appeared. src/telemetry
 // reads the header directly instead.
 
+// Outbound trace context is not configured here either. @vercel/otel's fetch
+// instrumentation propagates only to same-origin and Vercel deployment URLs, so
+// Supabase never sees a `traceparent` from it. src/supabase.js turns on
+// supabase-js's own `tracePropagation` instead, which keeps the option and the
+// runtime import it needs in one file.
+
 // Not used here: @opentelemetry/instrumentation-express. It would add route and
 // middleware spans with no code at all, but patching a userland package under ESM
 // needs a loader flag at process start (`--experimental-loader`), and Vercel gives

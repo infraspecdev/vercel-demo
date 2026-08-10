@@ -321,6 +321,43 @@ registered provider — and lines still reach stdout, without trace ids.
 A purpose-built logger is used rather than pino, to avoid a transport setup that is awkward
 in a serverless function. Pino is the production swap.
 
+### Trace context into Supabase
+
+The trace stops at the network boundary unless something carries it across. `@vercel/otel`
+does not: its `fetch` instrumentation propagates context only to same-origin and Vercel
+deployment URLs, and `supabase.co` is neither. Every Supabase call was traced on our side
+and anonymous on theirs.
+
+`src/supabase.js` turns on `supabase-js`'s own propagation:
+
+```js
+import '@supabase/supabase-js/tracing'
+
+createClient(url, key, { …, tracePropagation: true })
+```
+
+The import registers the OpenTelemetry extractor; the option switches it on. Both are
+needed — the option alone logs a one-time warning and sends nothing, which is why they sit
+in the same file. No new dependency: `@opentelemetry/api` is already here, and the subpath
+ships with `supabase-js` 2.112.
+
+Every Supabase request now carries `traceparent`, and that `trace_id` appears in Supabase's
+API Gateway logs. The same id identifies the trace in SigNoz, so an slow PostgREST call can
+be read from either side.
+
+Two things worth knowing:
+
+- **The header names the service span, not the `fetch` span.** `supabase-js` builds its
+  headers before the patched `fetch` opens its span, so the active context is still
+  `inventory.items.list`. Same trace either way, and `trace_id` is the join key, so this
+  only matters if exact parent-child nesting across the boundary is ever wanted.
+- **`respectSamplingDecision` is left at its default of `true`.** Nothing is sampled out
+  today, so it changes nothing. Adding a sampler later would stop unsampled requests
+  carrying a `trace_id` into Supabase's logs; set it to `false` to keep tagging them.
+
+The header only ever goes to `*.supabase.co`, `*.supabase.in` and `localhost` —
+`supabase-js` enforces that, so a custom `fetch` to a third-party host is never tagged.
+
 ### Vercel's own observability
 
 Everything below works on the Hobby plan, alongside the SigNoz export:
