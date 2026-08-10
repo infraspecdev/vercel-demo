@@ -3,7 +3,10 @@
 Notes for instrumenting a plain Node/Express service on Vercel with ESM.
 
 **measured** = verified in this repo against a local OTLP receiver, 2026-08-06 to 2026-08-07.
-Everything else is cited. Nothing is verified against a real deployment or real SigNoz.
+
+**verified in production** = confirmed 2026-08-10 on a real Vercel deployment
+(`iad1`) exporting to a real collector and SigNoz, against a real Supabase project.
+Everything else is cited.
 
 ## Contents
 
@@ -121,9 +124,69 @@ exported     GET[032e3154…]
              inventory.items.list[66dbeabc20e72bbc]   ← the id in the header
 ```
 
+**verified in production.** Supabase logged
+`traceparent: 00-9035657b92a96badd19a59a65056f655-6ce0929643a51bc6-01`, and
+`6ce0929643a51bc6` resolves in SigNoz to `inventory.stock.byLocation` — with the `fetch`
+span (`c698c7d3…`) as its child:
+
+```
+GET /api/stock                        [f9b9cb36…]  488.4ms
+├─ inventory.locations.byCode         [61c0912e…]  240.5ms
+│  └─ fetch GET .../rest/v1/locations [f2b55e7a…]  240.3ms
+└─ inventory.stock.byLocation         [6ce09296…]  246.6ms  ← the id in the header
+   └─ fetch GET .../rest/v1/stock     [c698c7d3…]  246.4ms
+```
+
 `propagateContextUrls` would name the `fetch` span instead. Trace id is identical either
 way, and trace id is what Supabase's logs key on, so the difference is only visible if
 exact parent-child nesting across the boundary is wanted.
+
+### Where the trace id lands in Supabase's logs
+
+Supabase's own documentation states the `trace_id` "appears in API Gateway logs" without
+naming a field, giving a query, or describing how to verify it. It does arrive, in three
+places at once.
+
+**verified in production**, from one `edge_logs` row:
+
+| Key | Value |
+| --- | --- |
+| `request.headers.traceparent` | `00-9035657b…-6ce09296…-01` — the raw header |
+| `trace_id` | `9035657b92a96badd19a59a65056f655` — parsed out by Supabase |
+| `span_id` | `6ce0929643a51bc6` — parsed out by Supabase |
+
+All three live inside `log_attributes`, not at the top level of the row.
+
+**The dashboard's row summary does not show them.** Expanding a log entry in the unified
+Logs (BETA) view renders `"headers": {}` — empty — even while the user agent is visible in
+`event_message`. That view is a curated projection. Read the full `log_attributes` map, or
+query it:
+
+```sql
+select timestamp,
+       log_attributes['request.path']                 as path,
+       log_attributes['trace_id']                     as trace_id,
+       log_attributes['request.headers.traceparent']   as traceparent
+from logs
+where source = 'edge_logs'
+order by timestamp desc
+limit 20
+```
+
+Run that in **Logs → Explorer** (`/logs/explorer`), not the SQL Editor. The SQL Editor
+queries Postgres and answers `42P01: relation "logs" does not exist`, which reads like a
+broken query rather than the wrong surface.
+
+Two other fields on the same row make the correlation worth having:
+
+| Key | Meaning |
+| --- | --- |
+| `response.origin_time` | Supabase's own server-side duration, in ms |
+| `request.headers.x_client_info` | `supabase-js/2.112.1; runtime=node; runtime-version=24.18.0` |
+
+`response.origin_time` is the point of the whole exercise. For the trace above: the client
+`fetch` span measured 246.4ms and Supabase reported 232ms, so **≈14ms was network and
+client overhead**. That split cannot be computed from either side alone.
 
 ### The runtime import and the option must be in the same file
 

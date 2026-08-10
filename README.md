@@ -337,12 +337,28 @@ createClient(url, key, { …, tracePropagation: true })
 Both lines are needed, and no new dependency is: `@opentelemetry/api` is already here and
 the subpath ships with `supabase-js` 2.112.
 
-Every Supabase request now carries `traceparent`, and that `trace_id` appears in Supabase's
-API Gateway logs. The same id identifies the trace in SigNoz, so a slow PostgREST call can
-be read from either side.
+Every Supabase request now carries `traceparent`. Supabase records it in its API Gateway
+logs as `trace_id`, `span_id` and `request.headers.traceparent` — all three inside
+`log_attributes`, none of them in the row summary the dashboard shows first. Verified in
+production.
 
-Why `@vercel/otel` will not do this, which span the header names, the sampling tradeoff and
-the domain allowlist are in [Outbound trace context][docs-outbound].
+**To find it:** Logs → Explorer, not the SQL Editor.
+
+```sql
+select timestamp, log_attributes['trace_id'] as trace_id, log_attributes['request.path'] as path
+from logs
+where source = 'edge_logs'
+order by timestamp desc
+limit 20
+```
+
+The same id identifies the trace in SigNoz, so a slow PostgREST call can be read from either
+side. The row also carries `response.origin_time`, Supabase's own duration — subtract it
+from the client `fetch` span and the remainder is network plus client overhead. That was
+246.4ms against 232ms on one measured request, so ≈14ms of it was the network.
+
+Why `@vercel/otel` will not do this, which span the header names, the sampling tradeoff, the
+domain allowlist, and the full field table are in [Outbound trace context][docs-outbound].
 
 ### Vercel's own observability
 
