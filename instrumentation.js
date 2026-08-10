@@ -20,10 +20,11 @@ const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.replace(/\/$/, '')
 export const telemetryEnabled = Boolean(endpoint)
 
 if (telemetryEnabled) {
-  // SigNoz Cloud authenticates with its own header. Self-hosted SigNoz needs no
-  // key, so an absent value is not an error.
-  const headers = process.env.SIGNOZ_INGESTION_KEY
-    ? { 'signoz-ingestion-key': process.env.SIGNOZ_INGESTION_KEY }
+  // The collector authenticates on a plain `otel-auth-token` header — no
+  // `Authorization` scheme, the token is the whole value. A collector that
+  // needs no auth is not an error, so an absent value just sends no header.
+  const headers = process.env.OTEL_AUTH_TOKEN
+    ? { 'otel-auth-token': process.env.OTEL_AUTH_TOKEN }
     : {}
 
   registerOTel({

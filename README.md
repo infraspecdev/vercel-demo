@@ -129,7 +129,8 @@ does not help Store 1 today.
 
 ## Telemetry
 
-OpenTelemetry traces and logs, exported over OTLP to SigNoz.
+OpenTelemetry traces and logs, exported over OTLP to an OpenTelemetry Collector, which
+processes the signals and forwards them to SigNoz. The app never talks to SigNoz directly.
 
 Most of it costs nothing. `instrumentation.js` plus about ten lines in `src/app.js` produce
 full request traces on their own. The rest — domain attributes, cold starts, log
@@ -138,12 +139,13 @@ correlation — is hand-written, and each piece is described below.
 ### Configuration
 
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://ingest.<region>.signoz.cloud:443
-SIGNOZ_INGESTION_KEY=<key>
+OTEL_EXPORTER_OTLP_ENDPOINT=https://<collector-host>:4318
+OTEL_AUTH_TOKEN=<token>
 OTEL_SERVICE_NAME=inventory-service
 ```
 
-Self-hosted SigNoz uses `http://localhost:4318` and needs no ingestion key.
+`OTEL_AUTH_TOKEN` is sent as the `otel-auth-token` header on every OTLP export. Leave it
+unset for a collector that needs no auth — no header is sent, which is not an error.
 
 **Telemetry is opt-in.** With `OTEL_EXPORTER_OTLP_ENDPOINT` unset, the SDK is never
 registered and the app behaves exactly as it did before instrumentation existed.
