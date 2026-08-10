@@ -1,3 +1,15 @@
+// Registers the OpenTelemetry trace context extractor that `tracePropagation`
+// below depends on. The import *is* the opt-in — the module has no exports.
+//
+// It lives here rather than in instrumentation.js on purpose. Setting
+// `tracePropagation` without this import is not an error, just a one-time
+// warning and silently missing headers, so the two belong in the same file
+// where they cannot drift apart.
+//
+// Unconditional, not gated on OTEL_EXPORTER_OTLP_ENDPOINT: with no SDK
+// registered the extractor injects through the no-op propagator, finds no
+// traceparent, and returns null. No headers are added. Measured.
+import '@supabase/supabase-js/tracing'
 import { createClient } from '@supabase/supabase-js'
 
 let client
@@ -24,7 +36,22 @@ export function getSupabase() {
   }
 
   client = createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false }
+    auth: { persistSession: false, autoRefreshToken: false },
+
+    // Sends W3C `traceparent` on every Supabase request, so the trace id in
+    // SigNoz is the same one Supabase records in its API Gateway logs.
+    //
+    // @vercel/otel does not do this for us. Its fetch instrumentation
+    // propagates context only to same-origin and Vercel deployment URLs;
+    // supabase.co is neither. Measured.
+    //
+    // supabase-js restricts the header to *.supabase.co, *.supabase.in and
+    // localhost, so a custom fetch to a third-party host is never tagged.
+    //
+    // `respectSamplingDecision` is left at its default of true. Nothing is
+    // sampled out today, so it changes nothing — but adding a sampler later
+    // would stop unsampled requests carrying a trace id into Supabase's logs.
+    tracePropagation: true
   })
 
   return client

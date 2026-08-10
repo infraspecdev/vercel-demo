@@ -180,8 +180,8 @@ instruments `fetch` by default. No wrappers around the data layer, no spans in
 
 **`HttpInstrumentation` creates the request span** the Supabase spans hang from, and
 extracts inbound `traceparent` so a request from an already-traced caller joins the same
-trace. It patches `node:http`, a Node builtin, which is why it works under ESM with no
-loader flag.
+trace. `registerOTel` alone does not produce it — see
+[Does not work out of the box][docs-notfree].
 
 **Ten lines in `src/app.js` rename that span** after the matched route. HTTP
 instrumentation runs before routing, so it can only call the span `GET`; renaming on
@@ -189,6 +189,11 @@ response finish is what makes `/items/1` and `/items/2` aggregate as `/items/:id
 
 Deployment environment, region, git commit SHA, and deployment id come from `@vercel/otel`
 automatically, derived from Vercel's system environment variables.
+
+**One caveat when querying.** The request span and the Supabase spans use different HTTP
+semantic conventions — `http.response.status_code` on one, `http.status_code` on the other
+— so a filter written for one set silently matches none of the other's. Both key sets, and
+why this is not fixable in config, are in [Semantic conventions are split][docs-semconv].
 
 ### Custom instrumentation: the part that has to be hand-written
 
@@ -244,9 +249,8 @@ the function — treat it as a floor.
 `vercel.request_id` is what matches a SigNoz trace to the same request in Vercel's runtime
 logs.
 
-`registerOTel` accepts an `attributesFromHeaders` option that appears to cover the last of
-these. It does not apply here: it decorates spans `@vercel/otel` creates itself, and the
-request span in this app comes from `HttpInstrumentation`. The header is read directly.
+`registerOTel`'s `attributesFromHeaders` option looks like it covers the last of these. It
+does not — see [Does not work out of the box][docs-notfree]. The header is read directly.
 
 **Faults and business outcomes are recorded differently.** A Supabase failure records an
 exception and sets an error span status. A 404 for an unknown item, or a 409 for
@@ -260,13 +264,10 @@ of them pages anybody.
 
 ### Why not `instrumentation-express`
 
-It would add route and middleware spans with no code at all. It patches a userland
-package, which under ESM needs `--experimental-loader` at process start — and Vercel
-provides no way to pass Node flags to the function runtime. It cannot be registered from
-inside `instrumentation.js` either, because ESM loads the whole module graph before any
-module body runs, so Express is already resolved by then.
+It would add route and middleware spans with no code at all, and it is unavailable here —
+three separate reasons, all measured, in [Does not work out of the box][docs-notfree].
 
-Ten lines of renaming buys the same span name without the constraint.
+Ten lines of renaming in `src/app.js` buys the same span name without the constraint.
 
 ### Business metrics
 
@@ -321,6 +322,28 @@ registered provider — and lines still reach stdout, without trace ids.
 A purpose-built logger is used rather than pino, to avoid a transport setup that is awkward
 in a serverless function. Pino is the production swap.
 
+### Trace context into Supabase
+
+The trace stops at the network boundary unless something carries it across, and
+`@vercel/otel` does not carry it to Supabase. `src/supabase.js` turns on `supabase-js`'s
+own propagation:
+
+```js
+import '@supabase/supabase-js/tracing'
+
+createClient(url, key, { …, tracePropagation: true })
+```
+
+Both lines are needed, and no new dependency is: `@opentelemetry/api` is already here and
+the subpath ships with `supabase-js` 2.112.
+
+Every Supabase request now carries `traceparent`, and that `trace_id` appears in Supabase's
+API Gateway logs. The same id identifies the trace in SigNoz, so a slow PostgREST call can
+be read from either side.
+
+Why `@vercel/otel` will not do this, which span the header names, the sampling tradeoff and
+the domain allowlist are in [Outbound trace context][docs-outbound].
+
 ### Vercel's own observability
 
 Everything below works on the Hobby plan, alongside the SigNoz export:
@@ -369,3 +392,13 @@ would arrive twice by different paths and appear duplicated.
 Authentication, RLS policies, and multi-tenancy are all absent. `purchase_orders` and
 `purchase_order_lines` exist in the schema but have no endpoints — they are not needed for
 what this service is demonstrating.
+
+## Further reading
+
+[`docs/opentelemetry-on-vercel.md`](./docs/opentelemetry-on-vercel.md) — why the libraries
+behave the way they do. Everything there is measured against a local OTLP receiver. This
+file covers what the service captures; that one covers what fought back.
+
+[docs-notfree]: ./docs/opentelemetry-on-vercel.md#does-not-work-out-of-the-box
+[docs-outbound]: ./docs/opentelemetry-on-vercel.md#outbound-trace-context
+[docs-semconv]: ./docs/opentelemetry-on-vercel.md#semantic-conventions-are-split

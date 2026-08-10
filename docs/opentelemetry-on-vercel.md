@@ -2,13 +2,15 @@
 
 Notes for instrumenting a plain Node/Express service on Vercel with ESM.
 
-**measured** = verified in this repo against a local OTLP receiver, 2026-08-06.
+**measured** = verified in this repo against a local OTLP receiver, 2026-08-06 to 2026-08-07.
 Everything else is cited. Nothing is verified against a real deployment or real SigNoz.
 
 ## Contents
 
 - [Free with no code](#free-with-no-code)
 - [Does not work out of the box](#does-not-work-out-of-the-box)
+- [Outbound trace context](#outbound-trace-context)
+- [Semantic conventions are split](#semantic-conventions-are-split)
 - [Library gotchas](#library-gotchas)
 - [Express gotchas](#express-gotchas)
 - [Span naming](#span-naming)
@@ -20,7 +22,8 @@ Everything else is cited. Nothing is verified against a real deployment or real 
 ## Free with no code
 
 **`fetch` is instrumented by default.** `@vercel/otel` patches `fetch`. `supabase-js` uses
-`fetch`. So every Supabase query is a span, with no wrapper code.
+`fetch`. So every Supabase query is a span, with no wrapper code. Instrumented is not the
+same as propagated — see [Outbound trace context](#outbound-trace-context).
 
 **Resource attributes come from the environment.** `@vercel/otel` sets these on every span:
 
@@ -77,6 +80,183 @@ you Express auto-instrumentation, not Vercel.
 
 **measured** with the header set: the attribute never appeared. The option only decorates
 spans `@vercel/otel` creates itself. Read the header in middleware instead.
+
+## Outbound trace context
+
+### `@vercel/otel` does not propagate to third-party hosts
+
+Inbound propagation is free — `HttpInstrumentation` extracts `traceparent`. Outbound is not.
+`@vercel/otel`'s `shouldPropagate` injects only when the URL is `https:` and the host matches
+`VERCEL_URL` or `VERCEL_BRANCH_URL`, plus anything listed in `propagateContextUrls`. A
+Supabase host is none of those.
+
+**measured.** Every Supabase call was a span locally and carried no `traceparent` on the wire.
+
+Two ways to fix it:
+
+| | Mechanism | Injects the id of |
+| --- | --- | --- |
+| `supabase-js` | `import '@supabase/supabase-js/tracing'` + `tracePropagation: true` | the enclosing service span |
+| `@vercel/otel` | `fetch: { propagateContextUrls: [/\.supabase\.co/] } ` | the `fetch` span |
+
+This repo uses the first. The library enforces the domain allowlist itself
+(`*.supabase.co`, `*.supabase.in`, `localhost`), so there is no host pattern to keep
+correct, and a custom `fetch` to a third-party host is never tagged.
+
+Do not do both. `@vercel/otel` injects after `supabase-js` has built the headers and
+overwrites what it finds.
+
+### The header names the service span, not the `fetch` span
+
+`supabase-js` reads the active context when it builds its headers, which is before the
+patched `fetch` opens a span. So the `traceparent` it sends points at whatever span is
+already active.
+
+**measured**, with the OTLP payload captured to resolve the span id:
+
+```
+traceparent  00-71197e080c044972a085b1bb9827c669-66dbeabc20e72bbc-01
+exported     GET[032e3154…]
+             fetch GET .../rest/v1/items[accd3bd5…]
+             inventory.items.list[66dbeabc20e72bbc]   ← the id in the header
+```
+
+`propagateContextUrls` would name the `fetch` span instead. Trace id is identical either
+way, and trace id is what Supabase's logs key on, so the difference is only visible if
+exact parent-child nesting across the boundary is wanted.
+
+### The runtime import and the option must be in the same file
+
+`tracePropagation: true` without `import '@supabase/supabase-js/tracing'` is not an error.
+It logs a one-time warning and sends no headers. The import registers a process-global
+extractor under `Symbol.for('@supabase/supabase-js.traceContextExtractor')`; the option
+only reads it.
+
+Keeping both next to `createClient` — rather than putting the import in
+`instrumentation.js` — means they cannot drift apart, and no import-order rule has to hold.
+
+### It is a no-op when telemetry is off
+
+The import is unconditional. With no SDK registered, the extractor injects through the
+no-op propagator, finds no `traceparent`, and returns `null`.
+
+**measured.** With `OTEL_EXPORTER_OTLP_ENDPOINT` unset: no `traceparent`, no `tracestate`,
+no `baggage`, no warning. The "telemetry off behaves exactly as before" property holds
+without a conditional.
+
+### `respectSamplingDecision` defaults to `true`
+
+Trace headers are skipped when the `traceparent` sampled flag is `0`. Nothing is sampled
+out in this repo, so the default changes nothing today.
+
+It becomes a real choice the moment a sampler is added: unsampled requests stop carrying a
+`trace_id` into Supabase's logs, which is the correlation the feature exists for. Set it to
+`false` to tag every request regardless.
+
+### Requirements
+
+| Thing | Version |
+| --- | --- |
+| `@supabase/supabase-js` | 2.106+ for the option, **2.112+** for the `/tracing` subpath |
+| `@opentelemetry/api` | any; already a direct dependency here |
+| CDN / UMD build | not supported |
+
+## Semantic conventions are split
+
+The two instrumentations in this app name the same things differently. **measured**, from
+the exported OTLP payload of a single request:
+
+| Concept | Request span<br>`instrumentation-http` 0.221 | Supabase span<br>`@vercel/otel/fetch` 2.1.3 |
+| --- | --- | --- |
+| method | `http.request.method` | `http.method` |
+| status | `http.response.status_code` | `http.status_code` |
+| host | `server.address` | `http.host` |
+| path | `url.path` | — (only `http.url`, full) |
+| peer | `network.peer.address` | `net.peer.name` |
+
+HTTP semconv stabilised in v1.23.0. `instrumentation-http` finished its migration and now
+emits the stable names only. `@vercel/otel`'s bundled fetch instrumentation still emits the
+old v1.7.0 names.
+
+**A query on `http.response.status_code` silently misses every Supabase span.** That is the
+practical cost, and it is a wrong answer rather than an empty one.
+
+### No environment variable fixes this
+
+`OTEL_SEMCONV_STABILITY_OPT_IN` (`http`, `http/dup`) was the migration knob. Both ends of
+it are gone here:
+
+- `@vercel/otel` 2.1.3 — the string does not appear anywhere in its bundle. Its fetch
+  instrumentation is hardcoded to the old names.
+- `instrumentation-http` 0.221 — no stability-handling code left in the build output.
+  Stable-only.
+
+### `@vercel/otel` also puts the full URL in the span name
+
+```
+fetch GET http://…/rest/v1/items?select=id%2Csku%2Cname%2C…&order=sku.asc&limit=1
+```
+
+Every distinct query string is a distinct span name. That is the unbounded-cardinality
+mistake [Span naming](#span-naming) warns about, arriving by default rather than by
+someone's edit. It also puts PostgREST filter values in the span *name*, not just the
+attributes — see [PII](#pii).
+
+### Replacing the fetch instrumentation was prototyped and rejected
+
+`@opentelemetry/instrumentation-undici` 0.31 emits stable semconv and names client spans
+`GET`, both correct. Node's global `fetch` is undici, and it hooks `diagnostics_channel`
+rather than patching a module — so unlike `instrumentation-express`, it needs no loader
+flag. It looked like the clean fix. **measured**, five configurations:
+
+| `instrumentations` | request span | client spans | semconv | `traceparent` → Supabase | → third party |
+| --- | --- | --- | --- | --- | --- |
+| `['auto', http]` — current | ✅ | `@vercel/otel/fetch` | old | 1 | none |
+| `[undici, http]` | **gone** | undici | stable | **2** | yes |
+| `[http]` | **gone** | none | — | 1 | none |
+| `['auto', undici, http]` | ✅ | **both, duplicated** | mixed | **2** | yes |
+| `['auto', undici, http]` + `fetch: { ignoreUrls: ['*'] }` | ✅ | undici | stable | 1 | yes |
+
+Three findings, none of them anticipated:
+
+**`'auto'` is load-bearing.** Remove the string and `HttpInstrumentation` produces nothing
+— no request span, no spans at all — even though the instance is still passed explicitly.
+The `[http]` row isolates it: this is not a conflict with undici, it is the missing
+`'auto'`. Without a request span the trace reverts to one parentless trace per Supabase
+call, which is the failure
+[`registerOTel` alone is not enough](#registerotel-alone-is-not-enough) describes.
+
+**Undici appends the trace header rather than replacing it.** With `supabase-js`
+propagation also on:
+
+```
+traceparent: 00-82e0…-4dee4e9c54c54e07-01, 00-82e0…-f18cbbd1d8c292fb-01
+```
+
+Two values, comma-joined. Not a valid `traceparent`. Adopting undici therefore means
+turning `tracePropagation` back off in `src/supabase.js`.
+
+**Undici propagates to every host.** It has no domain allowlist. The current setup sends
+trace headers only to Supabase, because `supabase-js` enforces that itself. Switching
+widens that to anything the service fetches.
+
+Only the last row works, and it costs a dependency, an `ignoreUrls: ['*']` incantation, the
+loss of the `supabase-js` allowlist, and reverting
+[Outbound trace context](#outbound-trace-context). Not worth consistent attribute names.
+
+**Left as-is deliberately.** Know both key sets when querying.
+
+A span processor that copies the old keys onto the stable names is the cheaper option if
+this ever becomes painful — `spanProcessors` accepts `[SpanProcessor | "auto"]`, so one can
+be added alongside the default. It relies on the span still being mutable in `onEnd`, which
+holds in practice but is not in the SDK contract.
+
+### Unresolved
+
+Whether dropping `@vercel/otel`'s fetch spans would empty the **External APIs** section of
+Vercel's Observability tab. The fetch instrumentation has no `getVercelRequestContext`
+coupling anywhere in its bundle, which suggests that section is platform-fed rather than
+span-fed — but that is inference. Only a deployment settles it.
 
 ## Library gotchas
 
