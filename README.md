@@ -157,17 +157,17 @@ registered and the app behaves exactly as it did before instrumentation existed.
 ```
 GET /api/reports/low-stock                 83.5ms  http.route=/api/reports/low-stock
 └─ inventory.stock.lowStock                74.9ms  stock_rows_scanned=1920 low_stock_count=174
-   ├─ fetch GET  .../rest/v1/stock         39.1ms
-   ├─ fetch GET  .../rest/v1/items          6.2ms
-   └─ fetch GET  .../rest/v1/locations      1.4ms
+   ├─ fetch GET /rest/v1/stock             39.1ms
+   ├─ fetch GET /rest/v1/items              6.2ms
+   └─ fetch GET /rest/v1/locations          1.4ms
 
 POST /api/movements                        47.5ms  http.route=/api/movements
 └─ inventory.movements.record              25.2ms  movement_kind=issue quantity_delta=-3
    ├─ inventory.stock.read                 15.8ms  quantity_before=110
-   │  └─ fetch GET   .../rest/v1/stock     14.1ms
-   ├─ fetch POST  .../rest/v1/movements     5.1ms
+   │  └─ fetch GET /rest/v1/stock          14.1ms
+   ├─ fetch POST /rest/v1/movements         5.1ms
    └─ inventory.stock.write                 2.6ms  quantity_after=107
-      └─ fetch PATCH .../rest/v1/stock      1.9ms
+      └─ fetch PATCH /rest/v1/stock         1.9ms
 ```
 
 The second is the non-atomic write. The three calls are visible as separate spans.
@@ -411,10 +411,10 @@ what this service is demonstrating.
 
 ## Further reading
 
-[`docs/opentelemetry-on-vercel.md`](./docs/opentelemetry-on-vercel.md) — why the libraries
-behave the way they do. Everything there is measured against a local OTLP receiver. This
-file covers what the service captures; that one covers what fought back.
+[`docs/opentelemetry/`](./docs/opentelemetry/README.md) — why the libraries behave the way
+they do, one document per finding. Everything there is measured against a local OTLP
+receiver. This file covers what the service captures; those cover what fought back.
 
-[docs-notfree]: ./docs/opentelemetry-on-vercel.md#does-not-work-out-of-the-box
-[docs-outbound]: ./docs/opentelemetry-on-vercel.md#outbound-trace-context
-[docs-semconv]: ./docs/opentelemetry-on-vercel.md#semantic-conventions-are-split
+[docs-notfree]: ./docs/opentelemetry/setup.md#does-not-work-out-of-the-box
+[docs-outbound]: ./docs/opentelemetry/trace-propagation.md#outbound-trace-context
+[docs-semconv]: ./docs/opentelemetry/span-conventions.md#semantic-conventions-are-split
