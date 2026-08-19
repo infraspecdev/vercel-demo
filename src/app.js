@@ -6,6 +6,7 @@ import pageRoutes from './routes/pages.js'
 import { layout, esc } from './views/layout.js'
 import { platformContext } from './telemetry/platformContext.js'
 import { logger } from './telemetry/logger.js'
+import { requireApiKey } from './auth.js'
 
 /**
  * Records where a router is mounted, while that information is still available.
@@ -60,7 +61,7 @@ export function createApp() {
     })
   })
 
-  app.use('/api', recordMount, apiRoutes)
+  app.use('/api', recordMount, requireApiKey, apiRoutes)
   app.use('/', recordMount, pageRoutes)
 
   app.use((req, res) => {

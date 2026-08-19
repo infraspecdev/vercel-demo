@@ -24,6 +24,9 @@ cp .env.example .env
 Fill in `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from your Supabase project
 settings, under **Project Settings → API**.
 
+Set `API_KEY` to any secret string — `openssl rand -hex 32` produces a reasonable one.
+Callers need it to reach `/api/*`; see [Authenticating to the API](#authenticating-to-the-api).
+
 > **The service role key bypasses Row Level Security.** `schema.sql` disables RLS
 > deliberately (see the note at the top of that file), so this key is the only thing
 > between the public internet and the entire dataset. It is read server-side only, and it
@@ -35,6 +38,7 @@ settings, under **Project Settings → API**.
 npm install
 npm start          # http://localhost:3000
 npm run dev        # same, with --watch
+npm test           # node:test, no Supabase or network needed
 ```
 
 The app starts without Supabase credentials. `/health` reports `supabase_configured:
@@ -42,9 +46,54 @@ false` and every data route returns `503` with an explanation, rather than crash
 
 ## Deploying to Vercel
 
-Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as Environment Variables in the Vercel
-project, then push. No build step, no framework preset — `vercel.json` rewrites every path
-to a single function.
+Set `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` and `API_KEY` as Environment Variables in
+the Vercel project, then push. No build step, no framework preset — `vercel.json` rewrites
+every path to a single function.
+
+`API_KEY` is not optional in practice: a deployment without it answers every `/api/*`
+request with 401. Set it before the deploy that adds the gate, not after.
+
+## Authenticating to the API
+
+Every route under `/api/*` requires a shared key, sent as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" https://<deployment>/api/locations
+```
+
+Without it, or with the wrong key, the response is `401` and `{"error":"Unauthorized"}`.
+
+The gate **fails closed**. If `API_KEY` is unset on the server, nothing can match it, so
+every request is rejected — a deployment that loses the variable goes dark rather than
+serving the dataset to the internet.
+
+Two things stay open deliberately:
+
+| Path | Why |
+|------|-----|
+| `/health` | Uptime probes should not need a credential to answer "is it up" |
+| `/` and the other HTML pages | The dashboard is the demo. A bearer token has no place a browser can put it |
+
+That asymmetry is the point worth noticing: the pages read the same data the API serves,
+so this protects the *interface*, not the data. It is an access gate on automation, not a
+security boundary around the dataset.
+
+The response body never says *why* a request was rejected. The reason is recorded on the
+span instead, as `auth.rejected_reason`:
+
+| Value | Meaning |
+|-------|---------|
+| `missing` | No `Authorization` header at all |
+| `malformed` | A header that is not `Bearer <token>`, or an empty token |
+| `mismatch` | A well-formed token that is not the configured key — including when no key is configured |
+
+So a caller that forgot the header can be told apart from one guessing keys, without
+handing that distinction to the caller. Rejections are logged at `warn`, not `error`, so
+they do not inflate the fault rate.
+
+One consequence for tracing: a rejected request never reaches Express's router, so
+`req.route` is unset and the span keeps its bare `GET` / `POST` name with no `http.route`.
+Filter on `auth.rejected_reason` rather than by route when looking for them in SigNoz.
 
 ## Layout
 
@@ -54,6 +103,7 @@ api/index.js         Vercel entrypoint — exports the Express app as a function
 server.js            Local entrypoint — app.listen()
 src/
   app.js             Express assembly, 404 and error handlers
+  auth.js            API key gate for /api/*
   supabase.js        Client factory and error unwrapping
   services/          Data access. Every Supabase call lives here.
   routes/api.js      JSON endpoints
@@ -65,6 +115,9 @@ src/
     platformContext.js  Cold start and Vercel request id
     logger.js           Logs to stdout and to SigNoz, with trace ids
     metrics.js          Business counters
+test/
+  auth.test.js       The API key gate, driven through the real app
+  helpers/           A Supabase stand-in, so tests need no network
 ```
 
 Two entrypoints, one app. Neither holds logic — both import `src/app.js`.
@@ -88,10 +141,14 @@ value is escaped.
 | `GET` | `/api/movements` | `?item_id=` `?location_id=` `?limit=` (max 200) |
 | `POST` | `/api/movements` | Records a movement and applies it to stock |
 
+Every `/api/*` route needs `Authorization: Bearer $API_KEY`. `/health` does not. See
+[Authenticating to the API](#authenticating-to-the-api).
+
 Recording a movement:
 
 ```bash
 curl -X POST localhost:3000/api/movements \
+  -H "Authorization: Bearer $API_KEY" \
   -H 'content-type: application/json' \
   -d '{"item_id":7,"location_id":1,"kind":"issue","quantity":5,"reference":"WH-A-0412"}'
 ```
