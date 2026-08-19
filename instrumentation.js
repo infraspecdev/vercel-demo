@@ -13,6 +13,7 @@
 //   no attributesFromHeaders       Does not work out of the box
 //   no outbound trace context      Outbound trace context (it lives in src/supabase.js)
 //   DELTA metric temporality       README, Business metrics
+//   spanProcessors: ['auto', …]    @vercel/otel also puts the full URL in the span name
 import { registerOTel } from '@vercel/otel'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
 import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http'
@@ -23,6 +24,8 @@ import {
 } from '@opentelemetry/exporter-metrics-otlp-http'
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http'
+
+import { fetchSpanNames } from './src/telemetry/fetchSpanNames.js'
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.replace(/\/$/, '')
 
@@ -37,6 +40,10 @@ if (telemetryEnabled) {
     serviceName: process.env.OTEL_SERVICE_NAME ?? 'inventory-service',
 
     traceExporter: new OTLPTraceExporter({ url: `${endpoint}/v1/traces`, headers }),
+
+    // 'auto' keeps the processors @vercel/otel installs by default; the exporter
+    // above is added alongside them either way. fetchSpanNames only renames.
+    spanProcessors: ['auto', fetchSpanNames],
 
     logRecordProcessors: [
       new BatchLogRecordProcessor({
