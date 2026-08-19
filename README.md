@@ -411,10 +411,10 @@ what this service is demonstrating.
 
 ## Further reading
 
-[`docs/opentelemetry-on-vercel.md`](./docs/opentelemetry-on-vercel.md) — why the libraries
-behave the way they do. Everything there is measured against a local OTLP receiver. This
-file covers what the service captures; that one covers what fought back.
+[`docs/opentelemetry/`](./docs/opentelemetry/README.md) — why the libraries behave the way
+they do, one document per finding. Everything there is measured against a local OTLP
+receiver. This file covers what the service captures; those cover what fought back.
 
-[docs-notfree]: ./docs/opentelemetry-on-vercel.md#does-not-work-out-of-the-box
-[docs-outbound]: ./docs/opentelemetry-on-vercel.md#outbound-trace-context
-[docs-semconv]: ./docs/opentelemetry-on-vercel.md#semantic-conventions-are-split
+[docs-notfree]: ./docs/opentelemetry/setup.md#does-not-work-out-of-the-box
+[docs-outbound]: ./docs/opentelemetry/trace-propagation.md#outbound-trace-context
+[docs-semconv]: ./docs/opentelemetry/span-conventions.md#semantic-conventions-are-split

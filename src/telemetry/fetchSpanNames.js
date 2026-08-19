@@ -5,7 +5,7 @@
  * string and all. PostgREST puts `select`, `order`, `limit` and every filter there,
  * so `getItem(7)` and `getItem(9)` arrive as two distinct span names — and a
  * thousand item ids arrive as a thousand. That is the unbounded-cardinality mistake
- * docs/opentelemetry-on-vercel.md warns about, reaching the backend by default
+ * docs/opentelemetry/span-conventions.md warns about, reaching the backend by default
  * rather than by anyone's edit.
  *
  * No configuration turns it off. `resourceNameTemplate` only shapes the
