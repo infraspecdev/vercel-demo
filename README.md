@@ -157,17 +157,17 @@ registered and the app behaves exactly as it did before instrumentation existed.
 ```
 GET /api/reports/low-stock                 83.5ms  http.route=/api/reports/low-stock
 └─ inventory.stock.lowStock                74.9ms  stock_rows_scanned=1920 low_stock_count=174
-   ├─ fetch GET  .../rest/v1/stock         39.1ms
-   ├─ fetch GET  .../rest/v1/items          6.2ms
-   └─ fetch GET  .../rest/v1/locations      1.4ms
+   ├─ fetch GET /rest/v1/stock             39.1ms
+   ├─ fetch GET /rest/v1/items              6.2ms
+   └─ fetch GET /rest/v1/locations          1.4ms
 
 POST /api/movements                        47.5ms  http.route=/api/movements
 └─ inventory.movements.record              25.2ms  movement_kind=issue quantity_delta=-3
    ├─ inventory.stock.read                 15.8ms  quantity_before=110
-   │  └─ fetch GET   .../rest/v1/stock     14.1ms
-   ├─ fetch POST  .../rest/v1/movements     5.1ms
+   │  └─ fetch GET /rest/v1/stock          14.1ms
+   ├─ fetch POST /rest/v1/movements         5.1ms
    └─ inventory.stock.write                 2.6ms  quantity_after=107
-      └─ fetch PATCH .../rest/v1/stock      1.9ms
+      └─ fetch PATCH /rest/v1/stock         1.9ms
 ```
 
 The second is the non-atomic write. The three calls are visible as separate spans.

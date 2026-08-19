@@ -265,6 +265,44 @@ mistake [Span naming](#span-naming) warns about, arriving by default rather than
 someone's edit. It also puts PostgREST filter values in the span *name*, not just the
 attributes — see [PII](#pii).
 
+Known upstream as [vercel/otel#120](https://github.com/vercel/otel/issues/120), open since
+September 2024 with no maintainer reply. `resource.name` already strips the query — the
+helper is called two lines above the span name that does not use it:
+
+```js
+// packages/otel/src/instrumentations/fetch.ts, on main
+247:  : removeSearch(url.toString());                                      // resource.name
+249:  const spanName = name ?? `${fetchType} ${method} ${url.toString()}`;  // span name
+```
+
+**Fixed here by a span processor.** `src/telemetry/fetchSpanNames.js` renames these spans in
+`onStart`, to the URL path alone:
+
+```
+fetch GET /rest/v1/items
+```
+
+Four different queries against `items` — two list filters and two ids — went from four
+span names to one. Measured with the stub-and-sink harness.
+
+No configuration does this. `resourceNameTemplate` shapes the `resource.name` attribute,
+not the name. The name is overridable per call, through `RequestInit.opentelemetry.spanName`,
+which `supabase-js` does not set. `onStart` is the remaining hook, and renaming there is
+safe in a way that rewriting in `onEnd` is not: exporters read the name at `onEnd`, so the
+new name is already in place, and `onStart` receives a mutable `Span` by contract.
+
+Two things this does not do:
+
+- **`http.url` keeps the query string.** It is where the filters stay readable. An
+  attribute costs storage, not span-name cardinality — but it is still exported, so the
+  [PII](#pii) point stands unchanged.
+- **Paths are only bounded because they are PostgREST.** `/rest/v1/items`,
+  `/rest/v1/rpc/<fn>`. Fetching an API that puts ids in the path would need those
+  segments collapsed too.
+
+`spanProcessors: ['auto', …]` is additive: `'auto'` keeps the processors `@vercel/otel`
+installs by default, and `traceExporter` is wrapped and appended independently of it.
+
 ### Replacing the fetch instrumentation was prototyped and rejected
 
 `@opentelemetry/instrumentation-undici` 0.31 emits stable semconv and names client spans
@@ -436,7 +474,8 @@ Span and log attributes are exported to a third party. Anything on a span leaves
 
 - **`fetch` spans record the full URL, including the query string.** PostgREST puts filters
   there. `?email=eq.someone@example.com` would be exported verbatim. This is the least
-  obvious leak — no one wrote code to add it.
+  obvious leak — no one wrote code to add it. It is off the span *name* now
+  ([span name](#vercelotel-also-puts-the-full-url-in-the-span-name)), still on `http.url`.
 - **Identifiers are data.** `inventory.item_id` is harmless. A customer id, an account
   number, or anything that identifies a person is not.
 - **Error messages are recorded.** `span.recordException` captures the message, which often
